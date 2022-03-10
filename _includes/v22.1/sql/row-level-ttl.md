@@ -1,0 +1,1 @@
+CockroachDB has support for Time to Live ("TTL") expiration on table rows, also known as _Row-Level TTL_. Row-level TTL is a mechanism whereby rows from a table get automatically deleted once those rows pass a specified expiration time.
