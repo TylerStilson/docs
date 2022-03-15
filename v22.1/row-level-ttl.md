@@ -8,35 +8,33 @@ docs_area: develop
 
 {% include {{page.version.version}}/sql/row-level-ttl.md %}
 
-By using row-level TTL, you can avoid the complexity of writing and managing scheduled jobs from your application to perform the deletes. This can become complicated due to the need to balance the timeliness of the deletions vs. the effect on database performance when processing foreground traffic from your application.
+By using Row-Level TTL, you can avoid the complexity of writing and managing scheduled jobs from your application to mark rows as expired and perform the deletions. Doing this from your application can become complicated due to the need to balance the timeliness of the deletions vs. the effect of those deletions on database performance when processing foreground traffic from your application.
 
 Use cases for row-level TTL include:
 
 - Delete inactive data events to manage data size and performance: For example, you may want to delete order records from an online store after 90 days.
 
-- Delete data no longer needed for compliance: For example, a banking application may need to keep some subset of data for a period of time due to financial regulations. A TTL can be used to remove data older than that period on a continuous basis.
+- Delete data no longer needed for compliance: For example, a banking application may need to keep some subset of data for a period of time due to financial regulations. Row-Level TTL can be used to remove data older than that period on a rolling, continuous basis.
 
-- Outbox pattern: When events are written to an outbox table and published to a system like Kafka, those events must be deleted to prevent unbounded growth in the size of the outbox table. The TTL can be useful for this.
+- Outbox pattern: When events are written to an outbox table and published to an external system like [Kafka](https://en.wikipedia.org/wiki/Apache_Kafka), those events must be deleted to prevent unbounded growth in the size of the outbox table.
 
 ## How it works
 
-At a high level, Row-Level TTL works by doing approximately the same things you would do yourself if you had to implement this feature in your application. For example, if you were implementing batch deletes of expired data yourself, you might do something like the following:
+At a high level, Row-Level TTL works by:
+
+1. Splitting a single logical [`DELETE`](delete.html) statement into multiple concrete SQL queries, and running those queries in parallel as [background jobs](show-jobs.html).
+2. Deciding how many rows to [`SELECT`](select-clause.html) and [`DELETE`](delete.html) at once.
+3. Rate-limiting to control the rate of [`SELECT`](select-clause.html)s and [`DELETE`](delete.html)s to minimize the performance impact on foreground application queries.
+
+To go into slightly more detail, it does approximately the same things you would do yourself if you had to implement batch deletes of expired data from your application, namely:
 
 1. Issue a [selection query](selection-queries.html) at a [historical timestamp](as-of-system-time.html), yielding a set of rows that are eligible for deletion.
-2. Rather than issue a naive [`DELETE`](delete.html) on all the rows that are eligible for deletion, which would likely have [bad performance implications](delete.html#preserving-delete-performance-over-time), write a batch-delete loop similar to that described by [Batch delete on an indexed column](bulk-delete-data.html#batch-delete-on-an-indexed-column). This batch-delete loop runs in the background and operates on a subset of the eligible rows per iteration to protect the performance of foreground application queries.
-3. Depending on the performance impact of the previous step, you'd need to tweak the size of the batches per iteration, and limit the rate of those iterations, to find the best tradeoff you can between the timeliness of the deletions vs. the effect on overall database performance.
+2. Rather than issue a naive [`DELETE FROM foo WHERE bar = 'baz'`](delete.html) statement that operates on all the rows that are eligible for deletion, which would likely have [bad performance implications](delete.html#preserving-delete-performance-over-time), you would have to write a batch-delete loop similar to that described by [Batch delete on an indexed column](bulk-delete-data.html#batch-delete-on-an-indexed-column). This batch-delete loop would have to run in the background as a [job](show-jobs.html) and operate on a subset of the eligible rows per iteration to protect the performance of foreground application queries.
+3. Depending on the performance impact of the previous steps, you'd need to perform extensive testing and tweak the size of the batches per iteration, as well as limiting the rate of those iterations, to find the best tradeoff between the timeliness of deletions vs. the effect on overall database performance.
 
-In other words, Row-Level TTL handles:
+### Syntax overview
 
-- Sharding the delete into multiple queries, and running those queries in parallel as background jobs
-- Deciding how many rows to SELECT and DELETE at once
-- Rate-limiting to control the rate of SELECTs and DELETEs
-
-### Table metadata and storage parameters
-
-TTLs are defined on a per-table basis. The syntax for creating a table with an automatically managed TTL extends the [`storage_parameter` syntax](sql-grammar.html#opt_with_storage_parameter_list).
-
-For example, the SQL statement
+TTLs are defined using SQL statements on a per-table basis. The syntax for creating a table with an automatically managed TTL extends the [`storage_parameter` syntax](sql-grammar.html#opt_with_storage_parameter_list). For example, the SQL statement
 
 {% include_cached copy-clipboard.html %}
 ~~~ sql
@@ -74,6 +72,8 @@ SHOW CREATE TABLE events;
 
 ~~~
 
+XXX: DO WE NEED THE BELOW?
+
 {% include_cached copy-clipboard.html %}
 ~~~ sql
 INSERT INTO events (description) VALUES ('a thing', 'another thing', 'yet another thing');
@@ -109,13 +109,6 @@ Once rows are expired (that is, have crossed the TTL), they are _eligible_ to be
 
 ## Examples
 
-### View TTL jobs
-
-{% include_cached copy-clipboard.html %}
-~~~ sql
-SELECT * FROM [SHOW SCHEDULES] WHERE label LIKE 'row-level-ttl-%';
-~~~
-
 ### Create a table with row-level TTL
 
 To specify a TTL when creating a table, use the SQL syntax shown below. For example, to create a new table with rows that expire after 15 minutes, execute a statement like the following:
@@ -140,6 +133,24 @@ ALTER TABLE events SET (ttl_expire_after = '15 minutes');
 ### Drop row-level TTL from a table
 
 To drop the TTL on an existing table, 
+
+### View TTL jobs
+
+{% include_cached copy-clipboard.html %}
+~~~ sql
+SELECT * FROM [SHOW SCHEDULES] WHERE label LIKE 'row-level-ttl-%';
+~~~
+
+### View TTL storage parameters on a table
+
+{% include_cached copy-clipboard.html %}
+~~~ sql
+SELECT relname, reloptions FROM pg_class WHERE relname = 'events';
+~~~
+
+
+
+### Filter out expired
 
 ## Limitations
 
