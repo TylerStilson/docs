@@ -8,7 +8,9 @@ docs_area: develop
 
 {% include {{page.version.version}}/sql/row-level-ttl.md %}
 
-By using Row-Level TTL, you can avoid the complexity of writing and managing scheduled jobs from your application to mark rows as expired and perform the deletions. Doing this from your application can become complicated due to the need to balance the timeliness of the deletions vs. the effect of those deletions on database performance when processing foreground traffic from your application.
+Writing and managing scheduled jobs from the application layer to mark rows as expired and perform the necessary deletions can become complicated due to the need to avoid negative performance impact on foreground application queries.
+
+By using Row-Level TTL, you can avoid the complexity of balancing the timeliness of the deletions vs. the effect of those deletions on database performance when processing foreground traffic from your application.
 
 Use cases for row-level TTL include:
 
@@ -23,8 +25,10 @@ Use cases for row-level TTL include:
 At a high level, Row-Level TTL works by:
 
 1. Splitting a single logical [`DELETE`](delete.html) statement into multiple concrete SQL queries, and running those queries in parallel as [background jobs](show-jobs.html).
-2. Deciding how many rows to [`SELECT`](select-clause.html) and [`DELETE`](delete.html) at once.
-3. Rate-limiting to control the rate of [`SELECT`](select-clause.html)s and [`DELETE`](delete.html)s to minimize the performance impact on foreground application queries.
+2. Deciding how many rows to [`SELECT`](select-clause.html) and [`DELETE`](delete.html) at once in each of those queries.
+3. Applying a rate limit to control the rate of those background deletion queries to minimize the performance impact on foreground application queries.
+
+XXX: DELETE THE BELOW?
 
 To go into slightly more detail, it does approximately the same things you would do yourself if you had to implement batch deletes of expired data from your application, namely:
 
@@ -34,7 +38,7 @@ To go into slightly more detail, it does approximately the same things you would
 
 ### Syntax overview
 
-TTLs are defined using SQL statements on a per-table basis. The syntax for creating a table with an automatically managed TTL extends the [`storage_parameter` syntax](sql-grammar.html#opt_with_storage_parameter_list). For example, the SQL statement
+TTLs are defined on a per-table basis using SQL statements. The syntax for creating a table with an automatically managed TTL extends the [`storage_parameter` syntax](sql-grammar.html#opt_with_storage_parameter_list). For example, the SQL statement
 
 {% include_cached copy-clipboard.html %}
 ~~~ sql
@@ -51,7 +55,7 @@ has the following effects:
 2. Adds a hidden column `crdb_internal_expiration` of type [`TIMESTAMPTZ`](timestamp.html) to represent the TTL.
 3. Implicitly adds the `ttl` and `ttl_automatic_column` [storage parameters](#ttl-storage-parameters).
 
-To see the hidden column and the storage parameters, enter the [`SHOW CREATE TABLE`](show-create.html) statement:
+To see the hidden column and the storage parameters on the `events` table, enter the [`SHOW CREATE TABLE`](show-create.html) statement:
 
 {% include_cached copy-clipboard.html %}
 ~~~ sql
@@ -72,36 +76,25 @@ SHOW CREATE TABLE events;
 
 ~~~
 
-XXX: DO WE NEED THE BELOW?
-
-{% include_cached copy-clipboard.html %}
-~~~ sql
-INSERT INTO events (description) VALUES ('a thing', 'another thing', 'yet another thing');
-~~~
-
-~~~
-INSERT 3
-~~~
-
 ### TTL storage parameters
 
 The settings that control CockroachDB's TTL are provided using [storage parameters](sql-grammar.html#opt_with_storage_parameter_list).
 
 XXX: REVISE CONTENTS OF TABLE
 
-| Option                        | Description                                                                                                                                               |
-|-------------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `ttl`                         | Automatically set option. Signifies if a TTL is active. Not used for the job.                                                                             |
-| `ttl_automatic_column`        | Automatically set option if automatic connection is enabled. Not used for the job.                                                                        |
-| `ttl_expire_after`            | When a TTL would expire. Accepts any interval. Defaults to ''30 days''. Minimum of `'5 minutes'`.                                                         |
-| `ttl_expiration_expression`   | If set, uses the expression specified as the TTL expiration. Defaults to just using the `crdb_internal_expiration` column.                                |
-| `ttl_select_batch_size`       | How many rows to fetch from the range that have expired at a given time. Defaults to 500. Must be at least `1`.                                           |
-| `ttl_delete_batch_size`       | How many rows to delete at a time. Defaults to 100. Must be at least `1`.                                                                                 |
-| `ttl_range_concurrency`       | How many concurrent ranges are being worked on at a time. Defaults to `cpu_core_count`. Must be at least `1`.                                             |
-| `ttl_delete_rate_limit`       | Maximum number of rows to be deleted per second (acts as the rate limit). Defaults to 0 (signifying none).                                                |
-| `ttl_row_stats_poll_interval` | Whilst the TTL job is running, counts rows and expired rows on the table to report as prometheus metrics. By default unset, meaning no stats are fetched. |
-| `ttl_pause`                   | Stops the TTL job from executing.                                                                                                                         |
-| `ttl_job_cron`                | Frequency the job runs, specified using the CRON syntax.                                                                                                  |
+Option | Description
+-------+------------
+`ttl` | Automatically set option. Signifies if a TTL is active. Not used for the job.
+`ttl_automatic_column` | Automatically set option if automatic connection is enabled. Not used for the job.
+`ttl_expire_after` | When a TTL would expire. Accepts any interval. Defaults to ''30 days''. Minimum of `'5 minutes'`.
+`ttl_expiration_expression` | If set, uses the expression specified as the TTL expiration. Defaults to just using the `crdb_internal_expiration` column.
+`ttl_select_batch_size` | How many rows to fetch from the range that have expired at a given time. Defaults to 500. Must be at least `1`.
+`ttl_delete_batch_size` | How many rows to delete at a time. Defaults to 100. Must be at least `1`.
+`ttl_range_concurrency` | How many concurrent ranges are being worked on at a time. Defaults to `cpu_core_count`. Must be at least `1`.
+`ttl_delete_rate_limit` | Maximum number of rows to be deleted per second (acts as the rate limit). Defaults to 0 (signifying none).
+`ttl_row_stats_poll_interval` | Whilst the TTL job is running, counts rows and expired rows on the table to report as prometheus metrics. By default unset, meaning no stats are fetched.
+`ttl_pause` | Stops the TTL job from executing.
+`ttl_job_cron` <a name="ttl-job-cron"></a> | Frequency the job runs, specified using the [CRON syntax](https://cron.help).
 
 ### The deletion job
 
@@ -148,9 +141,50 @@ SELECT * FROM [SHOW SCHEDULES] WHERE label LIKE 'row-level-ttl-%';
 SELECT relname, reloptions FROM pg_class WHERE relname = 'events';
 ~~~
 
+### Control how often the TTL job runs
 
+Setting a TTL on a table controls when the rows therein are considered expired, but it only says that such rows _may_ be deleted at any time after the expiration. To control how often the TTL deletion job runs, use the [`ttl_job_cron` storage parameter](#ttl-job-cron), which supports [CRON syntax](https://cron.help).
 
-### Filter out expired
+To control the job interval at [`CREATE TABLE`](create-table.html) time, add the storage parameter as shown below:
+
+{% include_cached copy-clipboard.html %}
+~~~ sql
+CREATE TABLE tbl (
+  id UUID PRIMARY KEY default gen_random_uuid(),
+  text TEXT,
+  FAMILY (id, text)
+) WITH (ttl_job_cron = '@daily')
+~~~
+
+To update the TTL deletion job interval on a table that already has Row-Level TTL enabled, use [`ALTER TABLE`](alter-table.html):
+
+{% include_cached copy-clipboard.html %}
+~~~ sql
+ALTER TABLE tbl SET (ttl_job_cron = '@weekly')
+~~~
+
+### Reset a storage parameter to its default value
+
+To reset a storage parameter to its default value, use [`ALTER TABLE`](alter-table.html):
+
+{% include_cached copy-clipboard.html %}
+~~~ sql
+ALTER TABLE tbl RESET (ttl_job_cron)
+~~~
+
+### Filter out expired rows from a selection query
+
+XXX: WRITE ME
+
+## Common errors
+
+If you attempt to update a [TTL-related storage parameter](#ttl-storage-parameters) on a table that does not have TTL enabled, you will see the error below:
+
+~~~ 
+"ttl_expire_after" must be set
+~~~
+
+it is like
 
 ## Limitations
 
