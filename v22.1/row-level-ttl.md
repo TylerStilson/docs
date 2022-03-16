@@ -80,22 +80,22 @@ SHOW CREATE TABLE events;
 
 The settings that control CockroachDB's TTL are provided using [storage parameters](sql-grammar.html#opt_with_storage_parameter_list).
 
-XXX: REVISE CONTENTS OF TABLE
-
-Option | Description
--------+------------
-`ttl` | Automatically set option. Signifies if a TTL is active. Not used for the job.
-`ttl_automatic_column` | Automatically set option if automatic connection is enabled. Not used for the job.
-`ttl_expire_after` | When a TTL would expire. Accepts any interval. Defaults to ''30 days''. Minimum of `'5 minutes'`.
-`ttl_expiration_expression` | If set, uses the expression specified as the TTL expiration. Defaults to just using the `crdb_internal_expiration` column.
-`ttl_select_batch_size` | How many rows to fetch from the range that have expired at a given time. Defaults to 500. Must be at least `1`.
-`ttl_delete_batch_size` | How many rows to delete at a time. Defaults to 100. Must be at least `1`.
-`ttl_range_concurrency` | How many concurrent ranges are being worked on at a time. Defaults to `cpu_core_count`. Must be at least `1`.
-`ttl_delete_rate_limit` | Maximum number of rows to be deleted per second (acts as the rate limit). Defaults to 0 (signifying none).
-`ttl_row_stats_poll_interval` | Whilst the TTL job is running, counts rows and expired rows on the table to report as prometheus metrics. By default unset, meaning no stats are fetched.
-`ttl_pause` | Stops the TTL job from executing.
-`ttl_job_cron` <a name="ttl-job-cron"></a> | Frequency the job runs, specified using the [CRON syntax](https://cron.help).
-
+| Description                                | Option                                                                                                                                                                                                        |
+|--------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ttl_expire_after`                         | The [interval](interval.html) when a TTL will expire. Default: '30 days'. Minimum value: '5 minutes'.                                                                                                         |
+| `ttl`                                      | Signifies if a TTL is active. Automatically set.                                                                                                                                                              |
+| `ttl_expiration_expression`                | If set, uses the expression specified to generate the TTL expiration. Defaults to using the `crdb_internal_expiration` hidden column. Expression must evaluate to a nullable [`TIMESTAMPTZ`](timestamp.html). |
+| `ttl_select_batch_size`                    | How many rows to [select](select-clause.html) at one time from the set of expired rows. Default: 500. Minimum: 1.                                                                                             |
+| `ttl_delete_batch_size`                    | How many rows to [delete](delete.html) at a time. Default: 100. Minimum: 1.                                                                                                                                   |
+| `ttl_range_concurrency`                    | How many concurrent batches of expired rows are being worked on at a time. Default: `cpu_core_count`. Minimum: 1.                                                                                             |
+| `ttl_delete_rate_limit`                    | Maximum number of rows to be deleted per second (rate limit). Default: 0 (no limit).                                                                                                                          |
+| `ttl_row_stats_poll_interval`              | If set, counts rows and expired rows on the table to report as Prometheus metrics while the TTL job is running. Unset by default, meaning no stats are fetched and reported.                                  |
+| `ttl_pause`                                | If set, stops the TTL job from executing.                                                                                                                                                                     |
+| `ttl_job_cron` <a name="ttl-job-cron"></a> | Frequency at which the TTL job runs, specified using [CRON syntax](https://cron.help).                                                                                                                        |
+| `ttl_automatic_column`                     | If set, use the value of the `crdb_internal_expiration` hidden column. This is unset when `ttl_expiration_expression` is used.                                                                                |
+|                                            |                                                                                                                                                                                                               |
+| `ttl_select_as_of_system_time`             | The [`AS OF SYSTEM TIME`](as-of-system-time.html) value to add to the [`SELECT` clause](select-clause.html). Default: '30s'.                                                                                 | 
+  
 ### The deletion job
 
 Once rows are expired (that is, have crossed the TTL), they are _eligible_ to be deleted. However, they may not be deleted right away - instead, they are scheduled for deletion using a job that is run at the interval defined by the `ttl_job_cron` [storage parameter](#ttl-storage-parameters).
@@ -151,8 +151,7 @@ To control the job interval at [`CREATE TABLE`](create-table.html) time, add the
 ~~~ sql
 CREATE TABLE tbl (
   id UUID PRIMARY KEY default gen_random_uuid(),
-  text TEXT,
-  FAMILY (id, text)
+  value TEXT
 ) WITH (ttl_job_cron = '@daily')
 ~~~
 
@@ -175,6 +174,8 @@ ALTER TABLE tbl RESET (ttl_job_cron)
 ### Filter out expired rows from a selection query
 
 XXX: WRITE ME
+
+... use the `crdb_internal_expiration` hidden column?
 
 ## Common errors
 
