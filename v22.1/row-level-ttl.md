@@ -157,6 +157,7 @@ SELECT relname, reloptions FROM pg_class WHERE relname = 'events';
 XXX: ADD THESE TO KNOWN LIMITATIONS
 
 - You cannot use [foreign keys](foreign-key.html) to create references to or from a table that uses row-level TTL. 
+- [`SELECT`](selection-queries.html) queries against tables with Row-Level TTL enabled do not filter out expired rows from the result set. This may be added in a future release.
 
 ## See also
 
