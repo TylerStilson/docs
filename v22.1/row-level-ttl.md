@@ -40,7 +40,7 @@ TTLs are defined on a per-table basis using SQL statements. The syntax for creat
 
 {% include_cached copy-clipboard.html %}
 ~~~ sql
-CREATE TABLE events (
+CREATE TABLE ttl_test (
   id UUID PRIMARY KEY default gen_random_uuid(),
   description TEXT,
   inserted_at TIMESTAMP default current_timestamp()
@@ -48,6 +48,8 @@ CREATE TABLE events (
 ~~~
 
 has the following effects:
+
+<a name="crdb-internal-expiration"></a>
 
 1. Creates a repeating [scheduled job](#view-ttl-jobs) for the `events` table.
 2. Adds a hidden column `crdb_internal_expiration` of type [`TIMESTAMPTZ`](timestamp.html) to represent the TTL.
@@ -57,26 +59,25 @@ To see the hidden column and the storage parameters on the `events` table, enter
 
 {% include_cached copy-clipboard.html %}
 ~~~ sql
-SHOW CREATE TABLE events;
+SHOW CREATE TABLE ttl_test;
 ~~~
 
 ~~~
   table_name |                                                                                           create_statement
 -------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  events     | CREATE TABLE public.events (
+  ttl_test   | CREATE TABLE public.ttl_test (
              |     id UUID NOT NULL DEFAULT gen_random_uuid(),
              |     description STRING NULL,
              |     inserted_at TIMESTAMP NULL DEFAULT current_timestamp():::TIMESTAMP,
              |     crdb_internal_expiration TIMESTAMPTZ NOT VISIBLE NOT NULL DEFAULT current_timestamp():::TIMESTAMPTZ + '00:03:00':::INTERVAL ON UPDATE current_timestamp():::TIMESTAMPTZ + '00:03:00':::INTERVAL,
-             |     CONSTRAINT events_pkey PRIMARY KEY (id ASC)
+             |     CONSTRAINT ttl_test_pkey PRIMARY KEY (id ASC)
              | ) WITH (ttl = 'on', ttl_automatic_column = 'on', ttl_expire_after = '00:03:00':::INTERVAL)
 (1 row)
-
 ~~~
 
 ## TTL storage parameters
 
-The settings that control the behavior of Row-Level TTL are provided using [storage parameters](sql-grammar.html#opt_with_storage_parameter_list). These parameters can be set during table creation using [`CREATE TABLE`](#create-a-table-with-row-level-ttl), added to an existing table using the [`ALTER TABLE`](#add-row-level-ttl-to-an-existing-table) statement, or [reset to default values](#reset-a-ttl-storage-parameter-to-its-default-value).
+The settings that control the behavior of Row-Level TTL are provided using [storage parameters](sql-grammar.html#opt_with_storage_parameter_list). These parameters can be set during table creation using [`CREATE TABLE`](#create-a-table-with-row-level-ttl), added to an existing table using the [`ALTER TABLE`](#add-row-level-ttl-to-an-existing-table) statement, or [reset to default values](#reset-a-storage-parameter-to-its-default-value).
 
 | Description                                              | Option                                                                                                                                                                       |
 |----------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -101,32 +102,55 @@ To specify a TTL when creating a table, use the SQL syntax shown below. For exam
 {% include_cached copy-clipboard.html %}
 ~~~ sql
 CREATE TABLE events (
-  id UUID PRIMARY KEY,
-  description TEXT
-) WITH (ttl_expire_after = '15 minutes');
+  id UUID PRIMARY KEY default gen_random_uuid(),
+  description TEXT,
+  inserted_at TIMESTAMP default current_timestamp()
+) WITH (ttl_expire_after = '3 minutes');
+~~~
+
+~~~
+CREATE TABLE
+~~~
+
+Insert some data; it should work as expected:
+
+{% include_cached copy-clipboard.html %}
+~~~ sql
+INSERT INTO events (description) VALUES ('a thing'), ('another thing'), ('yet another thing');
+~~~
+
+~~~
+INSERT 3
 ~~~
 
 ### Add row-level TTL to an existing table
 
 To add a TTL to an existing table, use the SQL syntax shown below.
 
-XXX: DOES THIS SYNTAX WORK?
-
 {% include_cached copy-clipboard.html %}
 ~~~ sql
 ALTER TABLE events SET (ttl_expire_after = '90 days');
 ~~~
 
-### Remove row-level TTL from a table
+~~~
+ALTER TABLE
+~~~
 
-To drop the TTL on an existing table, reset the [`ttl` storage parameter](#param-ttl).
+### View TTL jobs
 
 {% include_cached copy-clipboard.html %}
 ~~~ sql
-ALTER TABLE events RESET (ttl)
+SELECT * FROM [SHOW SCHEDULES] WHERE label LIKE 'row-level-ttl-%';
 ~~~
 
-### Reset a TTL storage parameter to its default value
+~~~
+          id         |       label       | schedule_status |        next_run        | state | recurrence | jobsrunning | owner |            created            |     command
+---------------------+-------------------+-----------------+------------------------+-------+------------+-------------+-------+-------------------------------+-------------------
+  745396332264194049 | row-level-ttl-114 | ACTIVE          | 2022-03-17 21:00:00+00 | NULL  | @hourly    |           0 | root  | 2022-03-17 20:01:48.033267+00 | {"tableId": 114}
+(1 row)
+~~~
+
+### Reset a storage parameter to its default value
 
 To reset a [TTL storage parameter](#ttl-storage-parameters) to its default value, use the [`ALTER TABLE`](alter-table.html) statement:
 
@@ -135,13 +159,8 @@ To reset a [TTL storage parameter](#ttl-storage-parameters) to its default value
 ALTER TABLE events RESET (ttl_job_cron);
 ~~~
 
-### View TTL jobs
-
-XXX: SHOULD WE FILTER THIS QUERY EVEN FURTHER? WILL IT RESULT IN A HUGE LIST OF JOBS?
-
-{% include_cached copy-clipboard.html %}
-~~~ sql
-SELECT * FROM [SHOW SCHEDULES] WHERE label LIKE 'row-level-ttl-%';
+~~~
+ALTER TABLE
 ~~~
 
 ### View TTL storage parameters on a table
@@ -151,13 +170,12 @@ SELECT * FROM [SHOW SCHEDULES] WHERE label LIKE 'row-level-ttl-%';
 SELECT relname, reloptions FROM pg_class WHERE relname = 'events';
 ~~~
 
-### Reset a storage parameter to its default value
-
-To reset a storage parameter to its default value, use [`ALTER TABLE`](alter-table.html):
-
-{% include_cached copy-clipboard.html %}
-~~~ sql
-ALTER TABLE tbl RESET (ttl_job_cron)
+~~~
+  relname |                                 reloptions
+----------+-----------------------------------------------------------------------------
+  events  | NULL
+  events  | {ttl='on',ttl_automatic_column='on',ttl_expire_after='90 days':::INTERVAL}
+(2 rows)
 ~~~
 
 ### Control how often the TTL job runs
@@ -171,28 +189,68 @@ To control the job interval at [`CREATE TABLE`](create-table.html) time, add the
 CREATE TABLE tbl (
   id UUID PRIMARY KEY default gen_random_uuid(),
   value TEXT
-) WITH (ttl_job_cron = '@daily')
+) WITH (ttl_expire_after = '3 weeks', ttl_job_cron = '@daily');
 ~~~
+
+~~~
+CREATE TABLE
+~~~
+
+{{site.data.alerts.callout_info}}
+NOTE: To set the [`ttl_job_cron` storage parameter](#param-ttl-job-cron) when creating a table with Row-Level TTL, you must also set the [`ttl_expire_after` parameter](#param-ttl-expire-after).
+{{site.data.alerts.end}}
 
 To update the TTL deletion job interval on a table that already has Row-Level TTL enabled, use [`ALTER TABLE`](alter-table.html):
 
 {% include_cached copy-clipboard.html %}
 ~~~ sql
-ALTER TABLE tbl SET (ttl_job_cron = '@weekly')
+ALTER TABLE tbl SET (ttl_job_cron = '@weekly');
+~~~
+
+~~~
+ALTER TABLE
 ~~~
 
 ### Filter out expired rows from a selection query
 
-XXX: WRITE ME
+To fetch only those rows from a table that have not yet expired their TTL, use the [hidden `crdb_internal_expiration` column](#crdb-internal-expiration) as shown below:
 
-... use the `crdb_internal_expiration` hidden column?
+{% include_cached copy-clipboard.html %}
+~~~ sql
+SELECT * FROM events WHERE crdb_internal_expiration < now();
+~~~
+
+{% include_cached copy-clipboard.html %}
+~~~
+                   id                  |    description    |        inserted_at
+---------------------------------------+-------------------+-----------------------------
+  6d25862e-2e48-4993-ac3a-a2abbebebf32 | yet another thing | 2022-03-17 20:01:56.138216
+  a9404386-c4da-415f-b0b0-0dfad0f13c80 | a thing           | 2022-03-17 20:01:56.138216
+  d4ebf8cd-e482-4abb-8968-2ba39c9197d9 | another thing     | 2022-03-17 20:01:56.138216
+(3 rows)
+~~~
+
+### Remove row-level TTL from a table
+
+To drop the TTL on an existing table, reset the [`ttl` storage parameter](#param-ttl).
+
+{% include_cached copy-clipboard.html %}
+~~~ sql
+ALTER TABLE events RESET (ttl);
+~~~
 
 ## Common errors
 
-If you attempt to update a [TTL storage parameter](#ttl-storage-parameters) on a table that does not have TTL enabled, you will get the following error:
+If you attempt to update a [TTL storage parameter](#ttl-storage-parameters) on a table that does not have TTL enabled, you will get an error as shown below:
+
+{% include_cached copy-clipboard.html %}
+~~~ sql
+ALTER TABLE events SET (ttl_job_cron = '@weekly');
+~~~
 
 ~~~ 
-"ttl_expire_after" must be set
+ERROR: "ttl_expire_after" must be set
+SQLSTATE: 22023
 ~~~
 
 If you try to reset a [TTL storage parameter](#ttl-storage-parameters) but resetting that paraemeter would result in an invalid state of the TTL subsystem, CockroachDB will signal an error. For example, there is only one way to [remove row-level TTL from a table](#remove-row-level-ttl-from-a-table). If you try to remove the TTL from a table by resetting the `ttl_expire_after` storage parameter you set earlier, you will get the following error:
@@ -203,7 +261,8 @@ ALTER TABLE tbl RESET (ttl_expire_after);
 ~~~
 
 ~~~
-resetting "ttl_expire_after" is not permitted
+ERROR: resetting "ttl_expire_after" is not permitted
+SQLSTATE: 22023
 HINT: use `RESET (ttl)` to remove TTL from the table
 ~~~
 
