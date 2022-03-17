@@ -179,5 +179,6 @@ For detailed reference documentation on the `TRUNCATE` statement, including addi
 ## See also
 
 - [Delete data](delete-data.html)
+- [Batch Delete Expired Data with Row-Level TTL](row-level-ttl.html)
 - [`DELETE`](delete.html)
 - [`TRUNCATE`](truncate.html)
